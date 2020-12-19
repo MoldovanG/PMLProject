@@ -1,0 +1,85 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage[a4paper,inner = 0.5cm, outer = 0.5cm, top = 2cm, bottom = 2cm]{geometry}
+
+\usepackage[english,romanian]{babel}
+\usepackage{blindtext}
+\usepackage{fancyhdr}
+\usepackage{wrapfig}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{caption}
+\usepackage{dirtytalk}
+\usepackage{url}
+\usepackage{listings}
+
+\renewenvironment{abstract}[1]
+  {\bigskip\selectlanguage{#1}%
+   \begin{center}\bfseries\abstractname\end{center}}
+  {\par\bigskip}
+
+\newcommand{\source}[1]{\caption*{Sursă: {#1}} }
+
+\fancyhf{}
+\renewcommand{\headrulewidth}{2pt}
+\renewcommand{\footrulewidth}{1pt}
+\fancyhead[LE]{\leftmark}
+\fancyhead[RO]{\rightmark}
+\linespread{1.25}
+\hyphenpenalty=50000
+\pagenumbering{arabic}
+\setcounter{page}{0}
+\newgeometry{a4paper,inner = 1.7cm, outer = 2.7cm, top = 2cm, bottom = 2cm, bindingoffset = 1.2cm}
+\title{Descrierea soluției de multi-output regression pentru prezicerea poziției geografice a unui tweet}
+\author{George Moldovan}
+\begin{document}
+\maketitle
+\section{Prezentare Generală}
+\par Soluția propusă este una de învățare supervizată, pe baza tweeturilor si a pozițiilor geografice prezente in setul de antrenare. Abordarea prezentată este una în 2 pași, mai precis :
+\begin{itemize}
+\item Extragerea de hand-crafted features din setul de date și construcția unui feature map pentru fiecare tweet.
+\item Antrenarea unui model de regresie multi-output (deoarece rezultatul constă in 2 variabile, coordonatele geografice ale utilizatorului).
+\end{itemize}
+
+\section{Preprocesarea textului : Diferitele abordari}
+Din punct de vedere al preprocesării, fiecare tweet a suferit următoarele operații :
+\begin{itemize} 
+\item Modificarea textului pentru a conține doar litere mici. (Deoarece nu există o legătura directă intre capitalizarea unui anume cuvant si poziția geografică a utilizatorului)
+\item Eliminarea cuvintelor uzuale din limba germană (stop-words), deoarece acestea sunt folosite indiferent de locație deci nu aduc nici o valoare dacă sunt luate în calcul și scad calitatea antrenării.
+\item Tokenizarea tweet-ului (împărțirea acestuia în cuvinte separate).
+\end{itemize}
+Prima abordarea a constat in folosirea unui \textbf{CountVectorizer} din librăria \textbf{sklearn}, care, cu parametrii potriviți, oferă capacitățile de prepocesare descrise mai sus.  
+\begin{verbatim}
+self.count_vectorizer = CountVectorizer(encoding='utf-8',lowercase=True, 
+stop_words=stopwords.words('german'),ngram_range=(1, 1),max_df=0.5, 
+min_df=0, binary = True, max_features = 20000)
+\end{verbatim}
+
+\par Modul in care este definit primul modul de preprocesare, face ca doar cele mai importante 20000 de cuvinte din setul de date se fie considerate importante (default-ul este ca numar-ul de features sa fie egal cu numarul de cuvinte distincte din setul de antrenare). 
+\par Deasemenea, am ales sa iau in considerare doar cuvinte individuale, nu si perechi, de aceea ngram-range are limita maxima 1.Max-df si min-df  se refera la frecvența minimă si maximă a unui cuvânt pentru ca acesta să fie pastrat în setul de cuvinte relevante. Maxim-ul e setat la 0.5, deoarece in acest mod se extinde lista de cuvinte ignorate din cauza frecvenței cu care apar, deoarece nu toate cuvintele irelevante din limba germană sunt prezente în lista de stop-words pasată ca parametru. Binary este setat pe true deoarece doresc construcția unui BOW, nu și sa număr aparițiile fiecărui cuvânt.
+
+În urma antrenării modelului pe setul de date procesat astfel, rezultatul a fost unul nesatisfăcator, de doar \textbf{1.0133827971956562}, mai slab chiar decât baseline-ul. 
+Astfel, am decis aplicarea unui TfidfTransformer peste datele obținute. Am decis să folosesc o astfel de abordare deoarece frecvența unui cuvânt într-un tweet oferă mult mai mult context despre nucleul mesajului, putând obține rezultate mult mai bune. 
+\begin{verbatim}
+TfidfTransformer( norm='l2',use_idf=True, smooth_idf=True, sublinear_tf=True)
+\end{verbatim} 
+\par Pe lângă calcularea frecvenței cuvântului în tweet, ponderea acestora este calibrată de frecvența acestora în cadrul setului de antrenare. Un cuvânt cu frecvență mică în setul de date este mult mai relevant pentru locație tweet-ului decât un cuvânt care apare de multe ori in tweet, dar deasemenea este folosit si in foarte multe alte tweet-uri. 
+\par Pentru a obține aceasta pondere variabilă parametrului use-idf este True, iar pentru a evita împărțirea la 0, smooth-idf este setat pe True pentru a presupune ca orice cuvânt apare cel puțin o dată în setul de antrenare. Sublinear-tf este setat pe True pentru a logaritma frecvența termenilor, evitând un set de antrenare cu discrepanțe foarte mari intre valori. 
+
+\par Trecerea de la valori absolute la valorea calculată folosind frecvența termenilor în tweet ponderată de inversul frecvenței termenului în dataset duce la îmbunătățiri semnificative pe setul de validare, obținând un MSE de \textbf{0.5930440608413687}. 
+
+\section{Alegerea modelului și a parametrilor folosiți}
+Generarea locației pe baza textului din tweet are la baza  o regresie multi-label ce foloseste un regressor cu vectori suport peste care este aplicat un regressor chain, pentru a obține un output multidimensional. Prin aplicarea unei inlănțuiri pentru a obține output-ul bi-dimensional practic garantez ca coordonata y este prezisă in funcție de feature-vectorul asignat tweet-ului plus rezultatele generate de primul regressor (adica coordonata x prezisa). Faptul ca prezicera lui x este folosită în prezicerea lui y face ca cele 2 variabile să fie dependente una de cealalta îmbunătațind rezultatele față de o abordare în care se antrenează 2 modele cu output uni-dimensional în mod separat. 
+\begin{verbatim}
+LinearSvrModel = LinearSVR(C=0.5,random_state=1242,loss='squared_epsilon_insensitive')
+LinearSvrWrapper = RegressorChain(LinearSvrModel)
+LinearSvrWrapper.fit(loader.train_processed_tweets,loader.train_labels)
+\end{verbatim}
+\par Modelul de baza este un LinearSVR deoarece din experiența personala mașinile cu vectori suport oferă cele mai bune rezultate atunci cand datele au fost procesate corespunzător si prezintă un grad mare de separare.
+Atât valoarea C (parametrul de regularizare) cât și funcția loss au fost selectate prin încercari manuale deoarece aplicarea unui grid search pe un model ce face parte dintr-un RegressorChain nu a imbunatatit rezultatele. 
+\section{Rezultate pe setul de date de validare}
+\par Pe setul de date  de validare s-au obținut următoarele rezultate :
+\begin{itemize}
+\item MAE : 0.5863074767024781
+\item MSE : 0.5930440608413687
+\end{itemize}
+\end{document}
